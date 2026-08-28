@@ -93,6 +93,7 @@ ctx.systemPrompt.section({ name, order, text, ...(complete ? { complete: true } 
 
 - `ctx.connection.handle(...)` **不存在** → 正确是 `ctx.connection.rpc.handle(...)`（`HostConnectionHandle.rpc: HostConnectionRpc`）。
 - `rpc.handle` 返回值是 **disposer 函数** `() => Promise<void>`，不是 `Promise<disposer>`。原代码用 `.then(remove => ...)` 会失败。
+- **systemPrompt 分节文本会被强制做 `{{variable}}` 插值**，任何 `{{...}}`（含 `{{ }}`、空 `{{}}`、或未知变量名）都会令装配抛错 `malformed prompt variable reference`。角色提示词是用户自由文本，必须在注入前把 `{{` 转义（本插件用零宽空格 `\u200b` 断开开括号：`'{{' → '{' + '\u200b' + '{'`），否则用户写 `{{ }}` 即崩溃。
 - 浏览器 bundle 必须是惰性 CJS 闭包工厂；`exports["./package.json"]` 缺失会导致 Web 按钮静默 404（host 用 `require.resolve` 读元数据）。
 - Web 端的 RPC 连通性与侧边栏挂载**只能在真实浏览器里验证**；本环境无法运行浏览器，相关改动需用户侧确认。
 - patch 按 `id` **整体替换** `config`，不会深合并；改 `cordis.patch.yml` 时确保保留整行。

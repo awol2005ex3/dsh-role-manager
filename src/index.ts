@@ -99,12 +99,17 @@ export function apply(ctx: Context, config: Config): void {
   // roles is reflected on the next assembly with no re-registration. Only the
   // `complete` policy (replace vs append) requires re-registering.
   let sectionDispose: (() => void) | undefined
+  // The harness interpolates `{{name}}` references in every section and THROWS
+  // on malformed/unknown ones. Role prompts are free-form user text, so we
+  // neutralize the `{{` opener (break it with a zero-width space) — the scanner
+  // never matches, braces stay visible, and the prompt can't crash assembly.
+  const escapePromptVars = (text: string): string => text.replace(/\{\{/g, '{' + '\u200b' + '{')
   const registerActiveSection = (complete: boolean): void => {
     sectionDispose?.()
     sectionDispose = systemPrompt.section({
       name: SECTION_NAME,
       order: config.sectionOrder ?? 1,
-      text: () => store.getActive()?.prompt ?? '',
+      text: () => escapePromptVars(store.getActive()?.prompt ?? ''),
       ...(complete ? { complete: true } : {}),
     })
   }
