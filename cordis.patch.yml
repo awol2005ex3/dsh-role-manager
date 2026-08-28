@@ -1,0 +1,10 @@
+# 本插件作为 profile 层贡献的 patch：把插件注册进配置树。
+#
+# Node 半：loader.import('dsh-role-manager') 解析到主入口 lib/index.js，
+# 注册 systemPrompt 段落 + /rpc 角色管理端点。
+# 浏览器半：client-modules（dsh.client 服务）扫描到本包的 dsh.client 声明后，
+# 经 /plugins/<id>/client.js 提供 lib/client.js，浏览器 shell 为同一行名
+# 创建 fiber 并物化客户端模块，挂载"角色管理"面板。
+- insert:
+    - id: role-manager
+      name: dsh-role-manager
