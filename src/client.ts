@@ -56,6 +56,7 @@ interface Role {
   name: string
   prompt: string
   description?: string
+  introHtml?: string
 }
 
 /* ── RPC 调用 ── */
@@ -90,6 +91,49 @@ const BTN_CSS = [
 
 const PRIMARY_CSS = 'background:#1f6feb;color:#fff;border:1px solid #1f6feb;'
 
+/* 介绍页浮层样式 */
+const INTRO_OVERLAY_CSS = [
+  'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;',
+  'background:rgba(0,0,0,.45);',
+].join('')
+const INTRO_BOX_CSS = [
+  'width:560px;max-width:92vw;max-height:80vh;display:flex;flex-direction:column;',
+  'background:#fff;color:#1f2328;border-radius:12px;',
+  'box-shadow:0 12px 40px rgba(0,0,0,.3);overflow:hidden;',
+  'font:14px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;',
+].join('')
+const INTRO_BODY_CSS = 'flex:1;overflow:auto;padding:16px 20px;'
+
+/* 角色首页：注入到空白会话 hero 标题区的容器样式 */
+const HERO_INTRO_CSS = [
+  'width:100%;max-height:46vh;overflow:auto;padding:4px 16px 12px;text-align:center;',
+  'color:inherit;font:14px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;',
+].join('')
+
+function showIntro(role: Role): void {
+  const body = el('div', { style: INTRO_BODY_CSS })
+  // 内容为用户自己编写的角色介绍 HTML；本地单用户工具，直接渲染。
+  body.innerHTML = role.introHtml ?? ''
+  const close = makeButton('关闭', () => overlay.remove(), true)
+  const overlay = el('div', { style: INTRO_OVERLAY_CSS }, [
+    el('div', { style: INTRO_BOX_CSS }, [
+      el('div', {
+        style: 'display:flex;justify-content:space-between;align-items:center;' +
+          'padding:12px 20px;border-bottom:1px solid #eaecef;',
+      }, [
+        el('div', { style: 'font-weight:700;font-size:15px;', textContent: `🎭 ${role.name} · 角色介绍` }),
+        close,
+      ]),
+      body,
+    ]),
+  ])
+  // 点击遮罩空白处关闭
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove()
+  })
+  doc.body.append(overlay)
+}
+
 function makeButton(label: string, onClick: () => void, primary = false): HTMLButtonElement {
   const btn = el('button', { textContent: label, style: BTN_CSS + (primary ? PRIMARY_CSS : '') })
   btn.addEventListener('click', (e) => {
@@ -122,6 +166,10 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
     placeholder: '系统提示词（支持多行 / 换行）',
     style: 'width:100%;box-sizing:border-box;padding:5px 8px;min-height:90px;resize:vertical;border:1px solid #d0d7de;border-radius:6px;',
   }) as HTMLTextAreaElement
+  const introInput = el('textarea', {
+    placeholder: '角色介绍页 HTML（可选，应用角色时弹出展示该角色能干什么）',
+    style: 'width:100%;box-sizing:border-box;padding:5px 8px;min-height:70px;resize:vertical;border:1px solid #d0d7de;border-radius:6px;font-family:Consolas,monospace;',
+  }) as HTMLTextAreaElement
   let editingId: string | null = null
 
   function openForm(role?: Role): void {
@@ -129,6 +177,7 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
     nameInput.value = role?.name ?? ''
     descInput.value = role?.description ?? ''
     promptInput.value = role?.prompt ?? ''
+    introInput.value = role?.introHtml ?? ''
     form.style.display = 'block'
   }
   function closeForm(): void {
@@ -136,6 +185,7 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
     nameInput.value = ''
     descInput.value = ''
     promptInput.value = ''
+    introInput.value = ''
     form.style.display = 'none'
   }
 
@@ -163,6 +213,7 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
       label.append(text)
       const actions = el('div', { style: 'display:flex;flex-direction:column;gap:4px;' }, [
         makeButton('编辑', () => openForm(role)),
+        ...(role.introHtml ? [makeButton('介绍', () => showIntro(role))] : []),
         makeButton('删除', async () => {
           if (!window.confirm(`删除角色「${role.name}」？`)) return
           try {
@@ -206,10 +257,11 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
       return
     }
     try {
+      const introHtml = introInput.value.trim() || undefined
       if (editingId) {
-        await callRpc(conn, 'update', { id: editingId, name, prompt, description: descInput.value.trim() || undefined })
+        await callRpc(conn, 'update', { id: editingId, name, prompt, description: descInput.value.trim() || undefined, introHtml })
       } else {
-        await callRpc(conn, 'create', { name, prompt, description: descInput.value.trim() || undefined })
+        await callRpc(conn, 'create', { name, prompt, description: descInput.value.trim() || undefined, introHtml })
       }
       closeForm()
       await refresh()
@@ -223,6 +275,7 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
     nameInput,
     descInput,
     promptInput,
+    introInput,
     el('div', {}, [saveBtn, cancelBtn]),
   )
 
@@ -293,7 +346,7 @@ const FLOAT_BTN_CSS =
  * 将启动器挂入侧边栏插槽 [data-slot]；找不到或宿主移除时回退为浮动按钮。
  * MutationObserver 用于在 React 重渲染把节点挤出时重新挂回。
  */
-function mountLauncher(launcher: HTMLButtonElement): void {
+function mountLauncher(launcher: HTMLButtonElement, onMutate?: () => void): void {
   const styleSidebar = (): void => { launcher.style.cssText = SIDEBAR_BTN_CSS }
   const styleFloat = (): void => { launcher.style.cssText = FLOAT_BTN_CSS }
 
@@ -310,7 +363,10 @@ function mountLauncher(launcher: HTMLButtonElement): void {
   }
 
   ensureMounted()
-  const observer = new MutationObserver(() => { ensureMounted() })
+  const observer = new MutationObserver(() => {
+    ensureMounted()
+    onMutate?.()
+  })
   observer.observe(doc.documentElement, { childList: true, subtree: true })
 }
 
@@ -329,6 +385,33 @@ function apply(ctx: any): void {
   panel.id = 'dsh-role-manager-panel'
   doc.body.append(panel)
 
+  /* ── 角色首页：把空白会话 hero（"探索未至之境"标题区）替换为角色介绍 ──
+   * harness 的 hero 标题行结构固定：div.headline > span.fishHitbox >
+   * [data-slot="conversation.hero.brand.mark"]。标题文本没有可注册的
+   * slot，因此沿用本插件的 DOM 注入模式：隐藏默认标题行，在其原位置
+   * （stack 内、headline 前）插入介绍容器；当前会话开始后 hero 整体
+   * 卸载，注入节点随之消失，回到空白页时由 MutationObserver 重新挂上。
+   */
+  let latestActive: Role | undefined
+  let heroIntroEl: HTMLDivElement | undefined
+  let lastIntroHtml = ''
+  const syncHeroIntro = (): void => {
+    const mark = doc.querySelector('[data-slot="conversation.hero.brand.mark"]')
+    const headline = mark?.parentElement?.parentElement ?? null
+    const stack = headline?.parentElement ?? null
+    const want = latestActive?.introHtml ?? ''
+    if (!headline || !stack || !want) {
+      // hero 不在 DOM、或当前角色没有介绍：恢复默认标题并移除注入节点。
+      if (heroIntroEl) { heroIntroEl.remove(); heroIntroEl = undefined; lastIntroHtml = '' }
+      if (headline && headline.style.display === 'none') headline.style.display = ''
+      return
+    }
+    if (!heroIntroEl) heroIntroEl = el('div', { style: HERO_INTRO_CSS })
+    if (lastIntroHtml !== want) { heroIntroEl.innerHTML = want; lastIntroHtml = want }
+    if (headline.style.display !== 'none') headline.style.display = 'none'
+    if (heroIntroEl.parentElement !== stack) stack.insertBefore(heroIntroEl, headline)
+  }
+
   const launcher = makeButton('🎭 角色', () => {
     if (panel.style.display === 'none') {
       panel.style.display = 'block'
@@ -341,10 +424,12 @@ function apply(ctx: any): void {
 
   handle.onList = (roles, activeId) => {
     const active = roles.find((r) => r.id === activeId)
+    latestActive = active
     launcher.textContent = active ? `🎭 ${active.name}` : '🎭 角色'
+    syncHeroIntro()
   }
 
-  mountLauncher(launcher)
+  mountLauncher(launcher, syncHeroIntro)
 }
 
 // 工厂返回值即插件模块表：loader 从中读取 name / inject / apply 组装 fiber。

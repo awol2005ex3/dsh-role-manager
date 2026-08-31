@@ -12,6 +12,8 @@ export interface Role {
   prompt: string
   /** Optional free-form description shown in the UI. */
   description?: string
+  /** Optional HTML introduction page shown when the role is activated. */
+  introHtml?: string
 }
 
 /** Fields a caller supplies when creating or updating a role. */
@@ -19,6 +21,7 @@ export interface RoleInput {
   name: string
   prompt: string
   description?: string
+  introHtml?: string
 }
 
 /** On-disk YAML shape. */
@@ -60,6 +63,7 @@ export class RoleStore {
           name: r.name,
           prompt: r.prompt ?? '',
           ...(r.description === undefined ? {} : { description: r.description }),
+          ...(r.introHtml === undefined ? {} : { introHtml: r.introHtml }),
         }))
         this.activeId = data.active ?? null
       }
@@ -115,6 +119,7 @@ export class RoleStore {
       name,
       prompt: input.prompt,
       ...(input.description === undefined ? {} : { description: input.description }),
+      ...(input.introHtml === undefined ? {} : { introHtml: input.introHtml }),
     }
     this.roles.push(role)
     return { ...role }
@@ -127,6 +132,7 @@ export class RoleStore {
     if (patch.name !== undefined) role.name = patch.name
     if (patch.prompt !== undefined) role.prompt = patch.prompt
     if (patch.description !== undefined) role.description = patch.description
+    if (patch.introHtml !== undefined) role.introHtml = patch.introHtml
     return { ...role }
   }
 
