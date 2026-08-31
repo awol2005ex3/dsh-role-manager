@@ -1,6 +1,6 @@
 # AGENTS.md — dsh-role-manager
 
-DeepSeek Harness（`dsh`）角色管理插件。每个"角色"预设一份系统提示词，用户通过 Web 界面切换当前角色；宿主端按规则把活动角色注入系统提示词（对话未开始 → 替换；已进行 → 追加分节）。角色与选中状态持久化在 `~/.dsh/roles.yaml`。
+DeepSeek Harness（`dsh`）角色管理插件。每个"角色"预设一份系统提示词和一份可选的 HTML 介绍页，用户通过 Web 界面切换当前角色；宿主端按规则把活动角色注入系统提示词（对话未开始 → 替换；已进行 → 追加分节），浏览器端把空白会话首页（"探索未至之境" hero 区）原位替换为活动角色的介绍页。角色与选中状态持久化在 `~/.dsh/roles.yaml`。
 
 本插件是**独立项目**（不进入 harness monorepo），采用 `tsc` 编译 + `scripts/wrap-client.mjs` 闭包工厂打包的"独立构建"工作流。任何改动都应遵循本文件约定，并优先参照 `.opencode/skills/dsh-plugin-dev/SKILL.md`。
 
@@ -12,7 +12,7 @@ DeepSeek Harness（`dsh`）角色管理插件。每个"角色"预设一份系统
 | --- | --- |
 | `src/index.ts` | **宿主半**（Node）。注册 `systemPrompt` 分节 + `connection.rpc.handle('/rpc', ...)` 端点。导出 `name / inject / Config / apply`。 |
 | `src/store.ts` | `RoleStore`：读写 `~/.dsh/roles.yaml`（纯同步、无外部依赖，保证注入顺序可预测）。 |
-| `src/client.ts` | **浏览器半**。自包含 bundle（**刻意无任何 import/export**），渲染角色面板，通过 `connection.rpc.call` 调用宿主。末尾 `module.exports = { name, inject, apply }`。 |
+| `src/client.ts` | **浏览器半**。自包含 bundle（**刻意无任何 import/export**），渲染角色面板，通过 `connection.rpc.call` 调用宿主；另负责角色首页的 hero 替换（见「DOM 注入」一节）。末尾 `module.exports = { name, inject, apply }`。 |
 | `scripts/wrap-client.mjs` | 把 `lib/client.js` 包成 `window.__ModuleLoader__.load({ id, factory })` 惰性 CJS bundle。 |
 | `cordis.patch.yml` | 把插件行 `id: role-manager / name: dsh-role-manager` 插入 profile 配置树。 |
 | `package.json` | `dsh.bundle.patch` 指向 patch；`dsh.client.inject: ["@deepseek-ai/dsh-client-connection"]`；`exports["./client"]` 与 `exports["./package.json"]` 必填。 |
@@ -72,11 +72,12 @@ ctx.systemPrompt.section({ name, order, text, ...(complete ? { complete: true } 
 - `complete: true` → 替换整段系统提示词；省略 → 作为分节**追加**。
 - 本插件：对话未开始（`replaceBeforeStart` 且 `!conversationStarted`）用 `complete`，否则追加。`conversationStarted` 由 `agent/request` 事件置位（waterfall 钩子须 `return next()` 或短路）。
 
-### 侧边栏挂载（Web）
-- 稳定锚点：每个 slot 渲染站点都会包一层 `[data-slot="<key>"]` 的 `display:contents` 容器（见 harness `packages/client/ui-renderer/.../scoped-slots.tsx`）。本插件挂入 `sidebar.footer.action`。
-- 用 `MutationObserver`（观察 `document.documentElement` `childList+subtree`）在 React 重渲染把节点挤出时重新挂回。
-- 找不到该锚点时**回退为左下角浮动按钮**，功能不受影响。
-- **不能**注册 React 形式的 slot 组件（独立 tsc 构建无 React/JSX），侧边栏只能通过稳定的 `data-slot` DOM 锚点注入。
+### DOM 注入（侧边栏 + 角色首页，Web）
+- 稳定锚点：每个 slot 渲染站点都会包一层 `[data-slot="<key>"]` 的 `display:contents` 容器（见 harness `packages/client/ui-renderer/.../scoped-slots.tsx`）。
+- **侧边栏启动器**：挂入 `sidebar.footer.action`；找不到该锚点时**回退为左下角浮动按钮**，功能不受影响。
+- **角色首页**：空白会话 hero 的标题行结构固定为 `div.headline > span.fishHitbox > [data-slot="conversation.hero.brand.mark"]`（见 harness `packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx`），标题文本 `hero.headline` **没有可注册的 slot**（hero 只有 brand.mark / workspace / agentPreset 三个 slot）。因此从 brand.mark 锚点向上两层定位 `div.headline`，隐藏后在父容器 `div.stack` 内、headline 之前插入介绍容器；当前角色有 `introHtml` 时替换显示，无则恢复默认标题。
+- 用 `MutationObserver`（观察 `document.documentElement` `childList+subtree`）在 React 重渲染把节点挤出时重新挂回；同时驱动侧边栏挂载与 hero 同步。
+- **不能**注册 React 形式的 slot 组件（独立 tsc 构建无 React/JSX），DOM 注入只能通过稳定的 `data-slot` 锚点实现。
 
 ---
 
@@ -97,6 +98,7 @@ ctx.systemPrompt.section({ name, order, text, ...(complete ? { complete: true } 
 - 浏览器 bundle 必须是惰性 CJS 闭包工厂；`exports["./package.json"]` 缺失会导致 Web 按钮静默 404（host 用 `require.resolve` 读元数据）。
 - Web 端的 RPC 连通性与侧边栏挂载**只能在真实浏览器里验证**；本环境无法运行浏览器，相关改动需用户侧确认。
 - patch 按 `id` **整体替换** `config`，不会深合并；改 `cordis.patch.yml` 时确保保留整行。
+- **MutationObserver 回调里的 DOM 写操作必须幂等（变更检测后才写）。** observer 观察 `childList+subtree`，而同步逻辑本身会改 DOM（`style.display`、`insertBefore`、`innerHTML`）——不判断"已处于目标状态"就写，会触发新一轮 mutation 回调，形成无限循环。hero 同步（`syncHeroIntro`）与启动器挂载都遵循：位置 / 内容 / 样式均与目标一致时**什么都不做**。
 
 ---
 
@@ -108,4 +110,5 @@ ctx.systemPrompt.section({ name, order, text, ...(complete ? { complete: true } 
   - 系统提示词服务：`packages/core/system-prompt/src/index.ts`
   - slot 渲染契约：`packages/client/ui-renderer/src/client/scoped-slots.tsx`（稳定 `data-slot` 锚点）
   - 侧边栏结构：`packages/client/ui-sidebar/src/client/SidebarRoot.tsx`
+  - 会话首页 hero：`packages/client/ui-conversation/src/client/skeleton/{EmptyHero.tsx,ConversationRoot.tsx}`（hero 标题行结构与 slot 声明 `../contract/slots.ts`）
 - 参考插件（同类独立构建）：`../dsh-md-table-export`
