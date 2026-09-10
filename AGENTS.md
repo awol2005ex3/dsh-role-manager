@@ -10,7 +10,7 @@ DeepSeek Harness（`dsh`）角色管理插件。每个"角色"预设一份系统
 
 | 路径 | 作用 |
 | --- | --- |
-| `src/index.ts` | **宿主半**（Node）。注册 `systemPrompt` 分节 + `connection.rpc.handle('/rpc', ...)` 端点。导出 `name / inject / Config / apply`。 |
+| `src/index.ts` | **宿主半**（Node）。注册 `systemPrompt` 分节 + `connection.fetch.register()` 的 `/api/role-manager/*` 端点。导出 `name / inject / Config / apply`。 |
 | `src/store.ts` | `RoleStore`：读写 `~/.dsh/roles.yaml`（纯同步、无外部依赖，保证注入顺序可预测）。 |
 | `src/client.ts` | **浏览器半**。自包含 bundle（**刻意无任何 import/export**），渲染角色面板，通过 `connection.rpc.call` 调用宿主；另负责角色首页的 hero 替换（见「DOM 注入」一节）。末尾 `module.exports = { name, inject, apply }`。 |
 | `scripts/wrap-client.mjs` | 把 `lib/client.js` 包成 `window.__ModuleLoader__.load({ id, factory })` 惰性 CJS bundle。 |
@@ -46,21 +46,28 @@ npx @deepseek-ai/dsh --profile web --dump-config  # 校验插件树是否成功�
 
 ## API 契约速查
 
-### 宿主 RPC（注册处理端）
+### 宿主 RPC（harness 0.1.5+：/api 精确 Fetch 路由）
 ```ts
-ctx.connection.rpc.handle(
-  '/rpc',
-  (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<RpcResult>,
-  { authority: 'loopback' },          // 浏览器来源固定 loopback
-) => disposer: () => Promise<void>     // 注意：直接返回 disposer 函数，不是 Promise<disposer>
+ctx.get('connection').fetch.register({
+  path: '/api/role-manager/<ep>',   // 精确路径，/api 共享通道之下
+  methods: ['POST'],
+  requestBody: 'buffered',          // 受 connection 的 JSON 体积上限保护
+  fetch: (request: Request) => Promise<Response>,
+}) => disposer: () => Promise<void>
 ```
-- 请求信封：`payload` 形如 `{ args: Record<string, unknown> }`（客户端用 `call('/rpc','role-manager/<ep>',{args})`）。
-- 响应信封：`RpcResult = { ok: boolean; value?: unknown; error?: { message: string } }`。
-- 本插件端点前缀 `role-manager/`：`list` / `get` / `create` / `update` / `delete` / `switch`。
+- **不要用 `connection.rpc.handle('/rpc', ...)`**：0.1.5 回归（见「已知坑」），任何插件调用都会抛
+  `cannot get property "webServer" without inject`，路由静默缺失，浏览器表现为 405。
+- 信任栅栏 / 浏览器鉴权 / 请求体上限全部由 connection 自己的 `/api` 路由代管，插件 handler 无需处理。
+- wire 信封：浏览器 POST `{ type:'client-request', rpcId, method, payload }`（`payload` 形如 `{ args: {...} }`）；
+  插件须回 HTTP 200 + `{ type:'server-response', rpcId, result }`。
+- 结果信封（0.1.5 新契约，缺 `code`/`details` 客户端直接抛 invalid server-response）：
+  `RpcResult = { ok:true; value } | { ok:false; error:{ code:string; message:string; details:object } }`。
+- 本插件端点 `list` / `get` / `create` / `update` / `delete` / `switch`（`/api/role-manager/<ep>`）。
+- `connection.rpc.intercept('/api', ...)` 的拦截器席位**已被 api-gateway 占用**（每通道仅一个），插件不可抢。
 
 ### 浏览器 RPC（发起调用）
 ```ts
-ctx.connection.rpc.call('/rpc', `role-manager/${endpoint}`, { args }, signal?) => Promise<RpcResult>
+ctx.connection.rpc.call('/api', `role-manager/${endpoint}`, { args }, signal?) => Promise<RpcResult>
 ```
 客户端 `inject` 必须为 `['connection']`（在 `package.json` 的 `dsh.client.inject` 声明，且宿主 `inject: ['systemPrompt','connection']`）。
 
@@ -83,7 +90,7 @@ ctx.systemPrompt.section({ name, order, text, ...(complete ? { complete: true } 
 
 ## 如何扩展：新增一个 RPC 端点
 
-1. 在 `src/index.ts` 的 `handler` 的 `switch` 中加一个 `case '<name>'`，从 `args` 取值、调用 `store`，`return { ok:true, value }`（失败 `try/catch` 已统一包裹）。
+1. 在 `src/index.ts` 的 `RPC_ENDPOINTS` 元组里加端点名（会自动注册为 `/api/role-manager/<name>` 精确路由），并在 `handler` 的 `switch` 中加一个 `case '<name>'`，从 `args` 取值、调用 `store`，`return { ok:true, value }`（失败 `try/catch` 已统一包裹，错误须带 `code`/`details`）。
 2. 在 `src/store.ts` 增加对应方法（保持纯同步、写完调用 `save()`）。
 3. 在 `src/client.ts` 用 `callRpc(conn, '<name>', { ... })` 调用，并在面板 UI 绑定按钮 / 表单。
 4. `npm run build` → 重启 host → 浏览器验证。
@@ -92,7 +99,18 @@ ctx.systemPrompt.section({ name, order, text, ...(complete ? { complete: true } 
 
 ## 已知坑（踩过）
 
-- `ctx.connection.handle(...)` **不存在** → 正确是 `ctx.connection.rpc.handle(...)`（`HostConnectionHandle.rpc: HostConnectionRpc`）。
+- **harness 0.1.5 的 `connection.rpc.handle(channel, ...)` 对插件全部失效**（回归）：内部 `register()`
+  执行 `owner.webServer.register(route)`，而 `owner` 是 connection 插件自己的 ctx，其 fiber 在 0.1.5 把
+  `inject` 从 `['webServer','credentials']` 缩成了 `['credentials']`（/api 改由 `ctx.inject(['webServer'])` 延迟挂载）。
+  cordis 4 的严格属性访问随即抛 `cannot get property "webServer" without inject`。错误会被插件 catch 吞掉、
+  host 无任何日志，浏览器端表现为 `transport failure ... HTTP 405`（静态 fallback 对 POST 的应答）。
+  正解：改用 `connection.fetch.register()` 在 `/api` 下挂精确 Fetch 路由（见「API 契约速查」；
+  参考 harness `docs/api-gateway.zh.md`）。`ctx.inject(['webServer'], ...)` 救不了它——抛错点在 connection
+  自己的 ctx 上，与调用方 fiber 无关。
+- cordis 4 严格服务访问：`ctx.webServer` 这类**属性访问**要求当前 fiber 的 `inject` 声明该服务，
+  否则抛 `cannot get property "<service>" without inject`；`ctx.get(name)` 不做此检查。
+  （其他项目升级 0.1.5 后报「webServer 注入不存在」即此规则。）
+- `ctx.connection.handle(...)` **不存在** → 正确是 `ctx.connection.rpc.handle(...)`（`HostConnectionHandle.rpc: HostConnectionRpc`）。（0.1.5 起 handle 自身回归，见上）
 - `rpc.handle` 返回值是 **disposer 函数** `() => Promise<void>`，不是 `Promise<disposer>`。原代码用 `.then(remove => ...)` 会失败。
 - **systemPrompt 分节文本会被强制做 `{{variable}}` 插值**，任何 `{{...}}`（含 `{{ }}`、空 `{{}}`、或未知变量名）都会令装配抛错 `malformed prompt variable reference`。角色提示词是用户自由文本，必须在注入前把 `{{` 转义（本插件用零宽空格 `\u200b` 断开开括号：`'{{' → '{' + '\u200b' + '{'`），否则用户写 `{{ }}` 即崩溃。
 - 浏览器 bundle 必须是惰性 CJS 闭包工厂；`exports["./package.json"]` 缺失会导致 Web 按钮静默 404（host 用 `require.resolve` 读元数据）。

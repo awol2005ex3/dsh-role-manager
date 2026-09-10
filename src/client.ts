@@ -11,13 +11,15 @@
  * 本文件刻意不含任何 import/export 语句（除结尾的 module.exports 赋值），
  * 以便 wrap 脚本能干净地包上闭包外壳。所有类型以 any 处理，避免引入外部 d.ts。
  *
- * 功能：通过 ctx.connection.rpc 调用宿主端 /rpc 角色管理端点，提供
+ * 功能：通过 ctx.connection.rpc 调用宿主端 /api/role-manager/* 角色管理端点，提供
  * 角色列表、切换、新建、编辑、删除的界面。启动器优先挂入侧边栏
  * [data-slot="sidebar.footer.action"] 插槽，缺失时回退为浮动按钮。
  */
 
 const PLUGIN_ID = 'dsh-role-manager'
-const RPC_CHANNEL = '/rpc'
+// 共享 /api 通道（harness 0.1.5+）：宿主端以 connection.fetch.register() 在
+// /api/role-manager/<ep> 挂精确路由，浏览器 transport POST /api/<endpoint>。
+const RPC_CHANNEL = '/api'
 const RPC_PREFIX = 'role-manager/'
 
 /** 构建外壳（scripts/wrap-client.mjs 的 intro）注入的 CJS 语义，仅类型层面使用。 */

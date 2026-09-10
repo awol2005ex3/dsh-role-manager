@@ -40,23 +40,44 @@ export const Config = Schema.object({
 
 /** The system-prompt section name our active role contributes under. */
 const SECTION_NAME = 'role-manager:active'
-/** Logical RPC channel we own for role management. */
-const RPC_CHANNEL = '/rpc'
+/**
+ * Exact Fetch-route base under the shared `/api` channel (harness 0.1.5+).
+ * The generic `connection.rpc.handle('/rpc', ...)` path regressed in 0.1.5:
+ * internally it does `owner.webServer.register(route)` on the connection
+ * plugin's own context, whose fiber no longer injects `webServer`, so every
+ * out-of-tree `rpc.handle` call throws `cannot get property "webServer"
+ * without inject` (the 405 seen in the browser is the static fallback).
+ * The sanctioned extension point instead is `connection.fetch.register()`:
+ * exact routes below `/api`, dispatched inside Connection's own `/api` route,
+ * so the Host/Origin fence, browser authentication, and the JSON body cap are
+ * all applied by Connection before our handler runs.
+ */
+const RPC_BASE = '/api/role-manager'
 /** Endpoint prefix claimed by this plugin's host handler. */
 const RPC_PREFIX = 'role-manager/'
+/** Endpoints exposed as exact Fetch routes under {@link RPC_BASE}. */
+const RPC_ENDPOINTS = ['list', 'get', 'create', 'update', 'delete', 'switch'] as const
 
-/** Minimal shape of the host connection service we consume. */
-interface HostRpc {
-  handle(
-    channel: string,
-    handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<RpcResult>,
-    options: { authority: 'loopback' | 'trusted-host' },
-  ): () => Promise<void>
+/**
+ * Minimal shape of `connection.fetch` on harness 0.1.5+ (see
+ * `packages/client/connection/src/rpc.ts` → `HostConnectionFetch`).
+ */
+interface ConnectionFetchLike {
+  register(route: {
+    path: string
+    methods: readonly ('GET' | 'HEAD' | 'POST')[]
+    requestBody: 'buffered' | 'streaming'
+    fetch: (request: Request) => Promise<Response>
+  }): () => Promise<void>
 }
+/**
+ * Carrier-neutral RPC result (harness 0.1.5 wire contract: the browser
+ * transport rejects error results lacking `code` or `details`).
+ */
 interface RpcResult {
   ok: boolean
   value?: unknown
-  error?: { message: string }
+  error?: { code: string; message: string; details: object }
 }
 
 /**
@@ -132,7 +153,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => () => { sectionDispose?.() }, 'role-manager: section')
 
   // ── Host RPC handler ──────────────────────────────────────────────────────
-  const connection = ctx.get('connection') as { rpc?: HostRpc } | undefined
+  const connection = ctx.get('connection') as { fetch?: ConnectionFetchLike } | undefined
   if (connection === undefined) {
     ctx.logger.warn('dsh-role-manager: no connection service; Web client RPC disabled')
   }
@@ -143,7 +164,7 @@ export function apply(ctx: Context, config: Config): void {
     _signal: AbortSignal,
   ): Promise<RpcResult> => {
     if (!endpoint.startsWith(RPC_PREFIX)) {
-      return { ok: false, error: { message: `unknown endpoint ${endpoint}` } }
+      return { ok: false, error: { code: 'role-manager/unknown-endpoint', message: `unknown endpoint ${endpoint}`, details: {} } }
     }
     const args = ((payload as { args?: Record<string, unknown> })?.args ?? {}) as Record<string, unknown>
     try {
@@ -173,22 +194,58 @@ export function apply(ctx: Context, config: Config): void {
           return { ok: true, value: { activeId: store.getActiveId() } }
         }
         default:
-          return { ok: false, error: { message: `unknown endpoint ${endpoint}` } }
+          return { ok: false, error: { code: 'role-manager/unknown-endpoint', message: `unknown endpoint ${endpoint}`, details: {} } }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      return { ok: false, error: { message } }
+      return { ok: false, error: { code: 'role-manager/failed', message, details: {} } }
     }
   }
 
-  let rpcDispose: (() => void) | undefined
-  if (connection?.rpc !== undefined) {
+  // ── Host RPC handler (exact Fetch routes under the shared /api channel) ───
+
+  /**
+   * Answer one Connection RPC envelope for a single endpoint. The browser
+   * transport (`createWebConnectionRpc`) posts
+   * `{ type: 'client-request', rpcId, method, payload }` to
+   * `/api/role-manager/<endpoint>` and expects HTTP 200 with
+   * `{ type: 'server-response', rpcId, result }`; anything else surfaces as a
+   * transport failure in the browser.
+   */
+  const answer = (endpoint: string) => async (request: Request): Promise<Response> => {
+    let envelope: { type?: unknown; rpcId?: unknown; payload?: unknown }
     try {
-      const remove = connection.rpc.handle(RPC_CHANNEL, handler, { authority: 'loopback' })
-      rpcDispose = () => { void remove() }
-    } catch (err) {
-      ctx.logger.error(`dsh-role-manager: failed to register RPC: ${String(err)}`)
+      envelope = await request.json() as typeof envelope
+    } catch {
+      return new Response('malformed JSON body', { status: 400 })
+    }
+    if (envelope?.type !== 'client-request' || typeof envelope.rpcId !== 'string') {
+      return new Response('malformed rpc envelope', { status: 400 })
+    }
+    const result = await handler(`${RPC_PREFIX}${endpoint}`, envelope.payload, request.signal)
+    return new Response(JSON.stringify({ type: 'server-response', rpcId: envelope.rpcId, result }), {
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  const fetchRegistry = connection?.fetch
+  const routeDisposers: Array<() => unknown> = []
+  if (typeof fetchRegistry?.register !== 'function') {
+    ctx.logger.warn('dsh-role-manager: connection.fetch registry unavailable; Web client RPC disabled')
+  } else {
+    for (const endpoint of RPC_ENDPOINTS) {
+      try {
+        const remove = fetchRegistry.register({
+          path: `${RPC_BASE}/${endpoint}`,
+          methods: ['POST'],
+          requestBody: 'buffered',
+          fetch: answer(endpoint),
+        })
+        routeDisposers.push(remove)
+      } catch (err) {
+        ctx.logger.error(`dsh-role-manager: failed to register /api route ${RPC_BASE}/${endpoint}: ${String(err)}`)
+      }
     }
   }
-  ctx.effect(() => () => { rpcDispose?.() }, 'role-manager: rpc')
+  ctx.effect(() => () => { for (const remove of routeDisposers) void remove() }, 'role-manager: rpc routes')
 }
