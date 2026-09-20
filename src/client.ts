@@ -12,8 +12,9 @@
  * 以便 wrap 脚本能干净地包上闭包外壳。所有类型以 any 处理，避免引入外部 d.ts。
  *
  * 功能：通过 ctx.connection.rpc 调用宿主端 /api/role-manager/* 角色管理端点，提供
- * 角色列表、切换、新建、编辑、删除的界面。启动器优先挂入侧边栏
- * [data-slot="sidebar.footer.action"] 插槽，缺失时回退为浮动按钮。
+ * 角色列表、切换、新建、编辑、删除的界面。配置面板挂载进 dsh 自身设置页
+ * （优先 slots.register('settings.section')，回退设置对话框 DOM 锚点），
+ * 参考 dsh-logo-custom 的实现；不再占用侧边栏。
  */
 
 const PLUGIN_ID = 'dsh-role-manager'
@@ -24,6 +25,7 @@ const RPC_PREFIX = 'role-manager/'
 
 /** 构建外壳（scripts/wrap-client.mjs 的 intro）注入的 CJS 语义，仅类型层面使用。 */
 declare const module: { exports: unknown }
+declare function require(id: string): any
 
 /* 浏览器全局的窄访问面 */
 const win = window as unknown as {
@@ -77,13 +79,13 @@ async function callRpc(conn: any, endpoint: string, args: Record<string, unknown
   return res.value
 }
 
-/* ── 浮层界面 ── */
+/* ── 面板（嵌入设置页，流式布局） ── */
 
 const PANEL_CSS = [
-  'position:fixed;left:16px;bottom:64px;z-index:2147483646;width:360px;max-height:70vh;',
-  'overflow:auto;background:#fff;color:#1f2328;border:1px solid #d0d7de;border-radius:12px;',
-  'box-shadow:0 8px 28px rgba(0,0,0,.18);font:13px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;',
-  'padding:14px;',
+  'position:relative;width:100%;max-width:560px;box-sizing:border-box;',
+  'overflow:auto;background:transparent;color:inherit;border:1px solid rgba(127,127,127,.25);',
+  'border-radius:12px;font:13px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;',
+  'padding:14px;margin:8px 0;',
 ].join('')
 
 const BTN_CSS = [
@@ -148,29 +150,31 @@ function makeButton(label: string, onClick: () => void, primary = false): HTMLBu
 
 function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList?: (roles: Role[], activeId: string | null) => void } {
   let onList: ((roles: Role[], activeId: string | null) => void) | undefined
-  const status = el('div', { style: 'margin:6px 0;min-height:16px;color:#57606a;' })
+  const status = el('div', { style: 'margin:6px 0;min-height:16px;opacity:.7;' })
   const listBox = el('div', { style: 'margin:8px 0;display:flex;flex-direction:column;gap:6px;' })
 
   let roles: Role[] = []
   let activeId: string | null = null
   let selectedId: string | null = null
 
-  const form = el('div', { style: 'margin-top:10px;border-top:1px solid #eaecef;padding-top:10px;display:none;' })
+  const form = el('div', { style: 'margin-top:10px;border-top:1px solid rgba(127,127,127,.25);padding-top:10px;display:none;' })
+  const INPUT_CSS = 'width:100%;box-sizing:border-box;padding:5px 8px;margin-bottom:6px;' +
+    'border:1px solid rgba(127,127,127,.25);border-radius:6px;background:transparent;color:inherit;'
   const nameInput = el('input', {
     placeholder: '角色名称',
-    style: 'width:100%;box-sizing:border-box;padding:5px 8px;margin-bottom:6px;border:1px solid #d0d7de;border-radius:6px;',
+    style: INPUT_CSS,
   }) as HTMLInputElement
   const descInput = el('input', {
     placeholder: '描述（可选）',
-    style: 'width:100%;box-sizing:border-box;padding:5px 8px;margin-bottom:6px;border:1px solid #d0d7de;border-radius:6px;',
+    style: INPUT_CSS,
   }) as HTMLInputElement
   const promptInput = el('textarea', {
     placeholder: '系统提示词（支持多行 / 换行）',
-    style: 'width:100%;box-sizing:border-box;padding:5px 8px;min-height:90px;resize:vertical;border:1px solid #d0d7de;border-radius:6px;',
+    style: INPUT_CSS + 'min-height:90px;resize:vertical;',
   }) as HTMLTextAreaElement
   const introInput = el('textarea', {
     placeholder: '角色介绍页 HTML（可选，应用角色时弹出展示该角色能干什么）',
-    style: 'width:100%;box-sizing:border-box;padding:5px 8px;min-height:70px;resize:vertical;border:1px solid #d0d7de;border-radius:6px;font-family:Consolas,monospace;',
+    style: INPUT_CSS + 'min-height:70px;resize:vertical;font-family:Consolas,monospace;',
   }) as HTMLTextAreaElement
   let editingId: string | null = null
 
@@ -194,7 +198,7 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
   function renderList(): void {
     listBox.replaceChildren()
     if (roles.length === 0) {
-      listBox.append(el('div', { style: 'color:#8b949e;', textContent: '暂无角色，请在下方新建。' }))
+      listBox.append(el('div', { style: 'opacity:.6;', textContent: '暂无角色，请在下方新建。' }))
       return
     }
     for (const role of roles) {
@@ -202,13 +206,13 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
       radio.checked = selectedId === role.id
       radio.addEventListener('change', () => { selectedId = role.id })
       const label = el('label', {
-        style: 'display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border:1px solid #eaecef;border-radius:8px;cursor:pointer;',
+        style: 'display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border:1px solid rgba(127,127,127,.25);border-radius:8px;cursor:pointer;',
       }, [radio])
       const text = el('div', { style: 'flex:1;' }, [
         el('div', { style: 'font-weight:600;', textContent: role.name + (activeId === role.id ? ' （当前）' : '') }),
-        ...(role.description ? [el('div', { style: 'color:#57606a;font-size:12px;', textContent: role.description })] : []),
+        ...(role.description ? [el('div', { style: 'opacity:.7;font-size:12px;', textContent: role.description })] : []),
         el('div', {
-          style: 'color:#8b949e;font-size:11px;white-space:pre-wrap;',
+          style: 'opacity:.55;font-size:11px;white-space:pre-wrap;',
           textContent: role.prompt.length > 120 ? `${role.prompt.slice(0, 120)}…` : role.prompt,
         }),
       ])
@@ -301,24 +305,10 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
   })
   const newBtn = makeButton('新建角色', () => openForm())
 
-  const closeBtn = el('button', {
-    type: 'button',
-    textContent: '✕',
-    ariaLabel: '关闭',
-    title: '关闭',
-    style: 'margin-left:8px;padding:2px 8px;font-size:13px;line-height:1;cursor:pointer;' +
-      'border:1px solid #d0d7de;background:#f6f8fa;color:#57606a;border-radius:6px;',
-  }) as HTMLButtonElement
-  closeBtn.addEventListener('click', (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    root.style.display = 'none'
-  })
-
   const root = el('div', { style: PANEL_CSS }, [
     el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;' }, [
       el('div', { style: 'font-weight:700;font-size:14px;', textContent: '🎭 角色管理' }),
-      el('div', { style: 'display:flex;align-items:center;gap:6px;' }, [newBtn, closeBtn]),
+      newBtn,
     ]),
     status,
     listBox,
@@ -331,46 +321,131 @@ function buildPanel(conn: any): { root: HTMLElement; refresh: () => void; onList
   return { root, refresh, get onList() { return onList }, set onList(fn) { onList = fn } }
 }
 
-/* ── 客户端插件契约（浏览器半 fiber 使用；inject 请求 connection 服务） ── */
+/* ── 设置页挂载（参考 dsh-logo-custom） ── */
 
-const SIDEBAR_SLOT = 'sidebar.footer.action'
-const SIDEBAR_BTN_CSS =
-  'display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;' +
-  'margin:4px 0;padding:8px 10px;font-size:13px;cursor:pointer;' +
-  'border:1px solid rgba(127,127,127,.25);background:transparent;color:inherit;' +
-  'border-radius:8px;'
-const FLOAT_BTN_CSS =
-  'position:fixed;left:16px;bottom:16px;z-index:2147483647;padding:9px 14px;' +
-  'font-size:13px;background:#1f6feb;color:#fff;border:none;border-radius:8px;' +
-  'box-shadow:0 2px 8px rgba(0,0,0,.3);margin:0;'
+/** 在设置对话框 DOM 中查找可挂载的容器锚点（slots 注册失败时的回退路径）。 */
+function findSettingsHost(): HTMLElement | null {
+  const selectors = [
+    '[data-slot="settings.plugin.item"]',
+    '[data-slot="settings.plugins.tab"]',
+    '[data-slot="settings.section"]',
+    '[data-slot="settings.content"]',
+    '[data-slot="settings.body"]',
+  ]
+  for (const sel of selectors) {
+    const node = doc.querySelector(sel)
+    if (node instanceof HTMLElement) return node
+  }
+  return null
+}
+
+function mountPanelInSettings(panel: HTMLElement, refresh: () => void): void {
+  const host = findSettingsHost()
+  if (!host) {
+    if (panel.parentElement) panel.remove()
+    return
+  }
+  if (panel.parentElement !== host) {
+    host.append(panel)
+    refresh()
+  }
+}
+
+/** 回退路径下设置页导航可能缺少分区标题，为空的导航按钮补一个 label。 */
+function fillEmptySettingsNav(): void {
+  const dialog = doc.querySelector('[role="dialog"]')
+  if (!dialog) return
+  dialog.querySelectorAll('button, [role="tab"]').forEach(function (btn) {
+    if (!(btn instanceof HTMLElement)) return
+    if (btn.dataset.dshRoleNav === 'true') return
+    if (btn.closest('#dsh-role-manager-panel')) return
+    if (btn.getAttribute('aria-label')) return
+    const text = (btn.textContent || '').replace(/\s+/g, ' ').trim()
+    if (text) return
+    if (btn.offsetWidth < 72) return
+    btn.dataset.dshRoleNav = 'true'
+    const span = doc.createElement('span')
+    span.textContent = SECTION_LABEL
+    btn.appendChild(span)
+  })
+}
+
+const SECTION_LABEL = '角色管理'
 
 /**
- * 将启动器挂入侧边栏插槽 [data-slot]；找不到或宿主移除时回退为浮动按钮。
- * MutationObserver 用于在 React 重渲染把节点挤出时重新挂回。
+ * 优先走 dsh 的 slots 服务，把面板注册为设置页的独立分区（settings.section）。
+ * 独立构建无 JSX，用 require('react') 取宿主 React 运行时 + createElement 手写
+ * 组件：容器 ref 里 appendChild 已构建好的 DOM 面板。
+ * @returns 是否成功走上 slots 注册路径（false 时调用方回退 DOM 挂载）。
  */
-function mountLauncher(launcher: HTMLButtonElement, onMutate?: () => void): void {
-  const styleSidebar = (): void => { launcher.style.cssText = SIDEBAR_BTN_CSS }
-  const styleFloat = (): void => { launcher.style.cssText = FLOAT_BTN_CSS }
+function tryRegisterSettingsSlot(ctx: any, panel: HTMLElement, refresh: () => void): boolean {
+  const register = (slots: any) => {
+    let React: any
+    try { React = require('react') } catch { return false }
+    if (!React || typeof React.createElement !== 'function') return false
 
-  function sidebarHost(): Element | null {
-    return doc.querySelector(`[data-slot="${SIDEBAR_SLOT}"]`)
-  }
-  function ensureMounted(): void {
-    const host = sidebarHost()
-    if (host) {
-      if (launcher.parentElement !== host) { host.append(launcher); styleSidebar() }
-    } else if (launcher.parentElement !== doc.body) {
-      doc.body.append(launcher); styleFloat()
+    function RoleSettings() {
+      const ref = React.useRef(null)
+      React.useEffect(function () {
+        const node = ref.current as HTMLElement | null
+        if (!node) return
+        node.appendChild(panel)
+        refresh()
+      }, [])
+      return React.createElement('div', { ref, 'data-dsh-role-settings': 'true' })
     }
+
+    function NavIcon(props: Record<string, unknown>) {
+      return React.createElement(
+        'svg',
+        Object.assign({ width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, 'aria-hidden': true }, props),
+        React.createElement('circle', { cx: 12, cy: 8, r: 4 }),
+        React.createElement('path', { d: 'M4 21c0-4 3.6-7 8-7s8 3 8 7' }),
+      )
+    }
+
+    const sectionOpts = {
+      id: PLUGIN_ID,
+      label: SECTION_LABEL,
+      title: SECTION_LABEL,
+      icon: NavIcon,
+    }
+
+    const tryOne = (slotName: string, opts: Record<string, unknown>) => {
+      try {
+        if (typeof slots.inject === 'function') {
+          slots.inject(slotName, function () {
+            return slots.register({ name: slotName, ...opts }, RoleSettings)
+          })
+          return true
+        }
+        slots.register({ name: slotName, ...opts }, RoleSettings)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    if (tryOne('settings.section', sectionOpts)) return true
+    if (tryOne('settings.plugin.item', { key: PLUGIN_ID, label: SECTION_LABEL })) return true
+    if (tryOne('settings.plugins.tab', { id: PLUGIN_ID, label: SECTION_LABEL })) return true
+    return false
   }
 
-  ensureMounted()
-  const observer = new MutationObserver(() => {
-    ensureMounted()
-    onMutate?.()
-  })
-  observer.observe(doc.documentElement, { childList: true, subtree: true })
+  try {
+    if (typeof ctx?.inject === 'function') {
+      ctx.inject(['slots'], function (scope: any) {
+        register(scope.slots)
+      })
+      return true
+    }
+    const slots = ctx?.get?.('slots') ?? ctx?.slots
+    if (slots) return register(slots)
+  } catch { /* fall through to DOM mount */ }
+  return false
 }
+
+/* ── 客户端插件契约（浏览器半 fiber 使用；inject 请求 connection 服务） ── */
 
 function apply(ctx: any): void {
   const conn = ctx.connection
@@ -383,14 +458,12 @@ function apply(ctx: any): void {
 
   const handle = buildPanel(conn)
   const panel = handle.root
-  panel.style.display = 'none'
   panel.id = 'dsh-role-manager-panel'
-  doc.body.append(panel)
 
   /* ── 角色首页：把空白会话 hero（"探索未至之境"标题区）替换为角色介绍 ──
    * harness 的 hero 标题行结构固定：div.headline > span.fishHitbox >
    * [data-slot="conversation.hero.brand.mark"]。标题文本没有可注册的
-   * slot，因此沿用本插件的 DOM 注入模式：隐藏默认标题行，在其原位置
+   * slot，因此沿用 DOM 注入模式：隐藏默认标题行，在其原位置
    * （stack 内、headline 前）插入介绍容器；当前会话开始后 hero 整体
    * 卸载，注入节点随之消失，回到空白页时由 MutationObserver 重新挂上。
    */
@@ -414,24 +487,24 @@ function apply(ctx: any): void {
     if (heroIntroEl.parentElement !== stack) stack.insertBefore(heroIntroEl, headline)
   }
 
-  const launcher = makeButton('🎭 角色', () => {
-    if (panel.style.display === 'none') {
-      panel.style.display = 'block'
-      handle.refresh()
-    } else {
-      panel.style.display = 'none'
-    }
-  })
-  launcher.id = 'dsh-role-manager-launcher'
-
   handle.onList = (roles, activeId) => {
-    const active = roles.find((r) => r.id === activeId)
-    latestActive = active
-    launcher.textContent = active ? `🎭 ${active.name}` : '🎭 角色'
+    latestActive = roles.find((r) => r.id === activeId)
     syncHeroIntro()
   }
 
-  mountLauncher(launcher, syncHeroIntro)
+  const slotted = tryRegisterSettingsSlot(ctx, panel, handle.refresh)
+
+  // 观察 DOM：驱动 hero 同步；未走上 slots 注册路径时兼作设置页挂载回退。
+  // 所有 DOM 写操作幂等（见 AGENTS.md「已知坑」）。
+  const observer = new MutationObserver(() => {
+    syncHeroIntro()
+    if (!slotted) {
+      fillEmptySettingsNav()
+      mountPanelInSettings(panel, handle.refresh)
+    }
+  })
+  observer.observe(doc.documentElement, { childList: true, subtree: true })
+  if (!slotted) mountPanelInSettings(panel, handle.refresh)
 }
 
 // 工厂返回值即插件模块表：loader 从中读取 name / inject / apply 组装 fiber。

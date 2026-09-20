@@ -12,7 +12,7 @@ DeepSeek Harness（`dsh`）角色管理插件。每个"角色"预设一份系统
 | --- | --- |
 | `src/index.ts` | **宿主半**（Node）。注册 `systemPrompt` 分节 + `connection.fetch.register()` 的 `/api/role-manager/*` 端点。导出 `name / inject / Config / apply`。 |
 | `src/store.ts` | `RoleStore`：读写 `~/.dsh/roles.yaml`（纯同步、无外部依赖，保证注入顺序可预测）。 |
-| `src/client.ts` | **浏览器半**。自包含 bundle（**刻意无任何 import/export**），渲染角色面板，通过 `connection.rpc.call` 调用宿主；另负责角色首页的 hero 替换（见「DOM 注入」一节）。末尾 `module.exports = { name, inject, apply }`。 |
+| `src/client.ts` | **浏览器半**。自包含 bundle（**刻意无任何 import/export**），渲染角色面板并挂载进 dsh 设置页（slots 注册 `settings.section`，回退设置对话框 DOM 锚点，见「DOM 注入」一节）；另负责角色首页的 hero 替换。末尾 `module.exports = { name, inject, apply }`。 |
 | `scripts/wrap-client.mjs` | 把 `lib/client.js` 包成 `window.__ModuleLoader__.load({ id, factory })` 惰性 CJS bundle。 |
 | `cordis.patch.yml` | 把插件行 `id: role-manager / name: dsh-role-manager` 插入 profile 配置树。 |
 | `package.json` | `dsh.bundle.patch` 指向 patch；`dsh.client.inject: ["@deepseek-ai/dsh-client-connection"]`；`exports["./client"]` 与 `exports["./package.json"]` 必填。 |
@@ -79,12 +79,12 @@ ctx.systemPrompt.section({ name, order, text, ...(complete ? { complete: true } 
 - `complete: true` → 替换整段系统提示词；省略 → 作为分节**追加**。
 - 本插件：对话未开始（`replaceBeforeStart` 且 `!conversationStarted`）用 `complete`，否则追加。`conversationStarted` 由 `agent/request` 事件置位（waterfall 钩子须 `return next()` 或短路）。
 
-### DOM 注入（侧边栏 + 角色首页，Web）
+### DOM 注入与设置页挂载（Web）
 - 稳定锚点：每个 slot 渲染站点都会包一层 `[data-slot="<key>"]` 的 `display:contents` 容器（见 harness `packages/client/ui-renderer/.../scoped-slots.tsx`）。
-- **侧边栏启动器**：挂入 `sidebar.footer.action`；找不到该锚点时**回退为左下角浮动按钮**，功能不受影响。
+- **配置面板 → dsh 设置页**（参考 `../dsh-logo-custom`）：优先通过浏览器 `slots` 服务注册 `settings.section`（其次 `settings.plugin.item` / `settings.plugins.tab`），组件用 `require('react')` 借宿主 React 运行时手写 `createElement`（无 JSX），`useEffect` 里 `appendChild` 已构建的 DOM 面板；ctx 无 `inject`/`slots` 时逐级回退。整条 slots 路径失败时，回退为查找设置对话框锚点（`[data-slot="settings.section"]` 等）直接挂载 DOM，并给空导航按钮补「角色管理」标题。浏览器不再占用侧边栏。
 - **角色首页**：空白会话 hero 的标题行结构固定为 `div.headline > span.fishHitbox > [data-slot="conversation.hero.brand.mark"]`（见 harness `packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx`），标题文本 `hero.headline` **没有可注册的 slot**（hero 只有 brand.mark / workspace / agentPreset 三个 slot）。因此从 brand.mark 锚点向上两层定位 `div.headline`，隐藏后在父容器 `div.stack` 内、headline 之前插入介绍容器；当前角色有 `introHtml` 时替换显示，无则恢复默认标题。
-- 用 `MutationObserver`（观察 `document.documentElement` `childList+subtree`）在 React 重渲染把节点挤出时重新挂回；同时驱动侧边栏挂载与 hero 同步。
-- **不能**注册 React 形式的 slot 组件（独立 tsc 构建无 React/JSX），DOM 注入只能通过稳定的 `data-slot` 锚点实现。
+- 用 `MutationObserver`（观察 `document.documentElement` `childList+subtree`）在 React 重渲染把节点挤出时重新挂回；驱动 hero 同步，DOM 回退路径下兼管设置页挂载。
+- 除借 `require('react')` 注册设置分区外，**不能**用 React 形式注册其他 slot 组件（独立 tsc 构建无 JSX、无法 import harness UI 包），其余 DOM 注入只能通过稳定的 `data-slot` 锚点实现。
 
 ---
 
@@ -114,9 +114,9 @@ ctx.systemPrompt.section({ name, order, text, ...(complete ? { complete: true } 
 - `rpc.handle` 返回值是 **disposer 函数** `() => Promise<void>`，不是 `Promise<disposer>`。原代码用 `.then(remove => ...)` 会失败。
 - **systemPrompt 分节文本会被强制做 `{{variable}}` 插值**，任何 `{{...}}`（含 `{{ }}`、空 `{{}}`、或未知变量名）都会令装配抛错 `malformed prompt variable reference`。角色提示词是用户自由文本，必须在注入前把 `{{` 转义（本插件用零宽空格 `\u200b` 断开开括号：`'{{' → '{' + '\u200b' + '{'`），否则用户写 `{{ }}` 即崩溃。
 - 浏览器 bundle 必须是惰性 CJS 闭包工厂；`exports["./package.json"]` 缺失会导致 Web 按钮静默 404（host 用 `require.resolve` 读元数据）。
-- Web 端的 RPC 连通性与侧边栏挂载**只能在真实浏览器里验证**；本环境无法运行浏览器，相关改动需用户侧确认。
+- Web 端的 RPC 连通性与设置页挂载**只能在真实浏览器里验证**；本环境无法运行浏览器，相关改动需用户侧确认。
 - patch 按 `id` **整体替换** `config`，不会深合并；改 `cordis.patch.yml` 时确保保留整行。
-- **MutationObserver 回调里的 DOM 写操作必须幂等（变更检测后才写）。** observer 观察 `childList+subtree`，而同步逻辑本身会改 DOM（`style.display`、`insertBefore`、`innerHTML`）——不判断"已处于目标状态"就写，会触发新一轮 mutation 回调，形成无限循环。hero 同步（`syncHeroIntro`）与启动器挂载都遵循：位置 / 内容 / 样式均与目标一致时**什么都不做**。
+- **MutationObserver 回调里的 DOM 写操作必须幂等（变更检测后才写）。** observer 观察 `childList+subtree`，而同步逻辑本身会改 DOM（`style.display`、`insertBefore`、`innerHTML`）——不判断"已处于目标状态"就写，会触发新一轮 mutation 回调，形成无限循环。hero 同步（`syncHeroIntro`）与设置页 DOM 回退挂载都遵循：位置 / 内容 / 样式均与目标一致时**什么都不做**。
 
 ---
 
